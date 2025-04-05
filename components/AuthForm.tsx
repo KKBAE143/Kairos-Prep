@@ -3,7 +3,7 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
 import { z } from "zod"
-import { useState } from "react"
+import { useState, useEffect } from "react"
 
 import { Button } from "@/components/ui/button"
 import { Form} from "@/components/ui/form"
@@ -17,7 +17,9 @@ import {
   sendEmailVerification,
   reload,
   signInWithPopup,
-  GoogleAuthProvider
+  GoogleAuthProvider,
+  signInWithRedirect,
+  getRedirectResult
 } from "firebase/auth";
 import {auth} from "@/firebase/client";
 import {signIn, signUp} from "@/lib/actions/auth.action";
@@ -50,6 +52,52 @@ const AuthForm = ({ type }: { type: FormType }) => {
             password: "",
         },
     })
+
+    // Check for redirect result on component mount
+    useEffect(() => {
+        const checkRedirectResult = async () => {
+            try {
+                const result = await getRedirectResult(auth);
+                if (result) {
+                    // User successfully authenticated with Google
+                    const user = result.user;
+                    const idToken = await user.getIdToken();
+                    
+                    // Always try to create/update the user record in your database
+                    const signUpResult = await signUp({
+                        uid: user.uid,
+                        name: user.displayName || 'User',
+                        email: user.email || '',
+                        password: '' // Empty password indicates Google sign-in
+                    });
+                    
+                    if (!signUpResult?.success) {
+                        toast.error(signUpResult?.message || 'Failed to create account');
+                        return;
+                    }
+                    
+                    // Sign in the user with your backend
+                    const signInResult = await signIn({
+                        email: user.email || '',
+                        idToken
+                    });
+                    
+                    if (!signInResult?.success) {
+                        toast.error(signInResult?.message || 'Failed to sign in');
+                        return;
+                    }
+                    
+                    toast.success('Signed in successfully with Google');
+                    router.replace('/');
+                }
+            } catch (error) {
+                console.error('Google redirect error:', error);
+                toast.error(`Google sign-in failed: ${(error as Error)?.message || 'Unknown error'}`);
+            }
+        };
+        
+        checkRedirectResult();
+    }, [router]);
 
     async function onSubmit(values: z.infer<typeof formSchema>) {
         try {
@@ -175,69 +223,22 @@ const AuthForm = ({ type }: { type: FormType }) => {
                 prompt: 'select_account'
             });
             
-            try {
-                const userCredential = await signInWithPopup(auth, provider);
-                
-                // Get user info
-                const user = userCredential.user;
-                
-                // Get the ID token
-                const idToken = await user.getIdToken();
-
-                
-                // Always try to create/update the user record in your database
-                const signUpResult = await signUp({
-                    uid: user.uid,
-                    name: user.displayName || 'User',
-                    email: user.email || '',
-                    password: '' // Empty password indicates Google sign-in
-                });
-                
-                if (!signUpResult?.success) {
-                    toast.error(signUpResult?.message || 'Failed to create account');
-                    setIsGoogleLoading(false);
-                    return;
-                }
-                
-                // Sign in the user with your backend
-                const signInResult = await signIn({
-                    email: user.email || '',
-                    idToken
-                });
-                
-                if (!signInResult?.success) {
-                    toast.error(signInResult?.message || 'Failed to sign in');
-                    setIsGoogleLoading(false);
-                    return;
-                }
-                
-                toast.success('Signed in successfully with Google');
-                
-                // Use router.replace instead of push to avoid navigation issues
-                router.replace('/');
-            } catch (popupError: unknown) {
-                console.error("Popup error:", popupError);
-                
-                if ((popupError as { code?: string }).code === 'auth/popup-closed-by-user' ||
-                    (popupError as { code?: string }).code === 'auth/popup-blocked' ||
-                    (popupError as Error).message?.includes('Cross-Origin-Opener-Policy')) {
-                    
-                    toast.error('Popup authentication failed. Please try again.');
-                    throw popupError; // Re-throw to be caught by the outer catch
-                }
-            }
+            // Use signInWithRedirect instead of signInWithPopup
+            await signInWithRedirect(auth, provider);
+            // The page will redirect to Google and then back to our app
+            // The redirect result is handled in the useEffect hook
         } catch (error: unknown) {
             console.error('Google sign-in error:', error);
             
             // Handle specific error cases
-            if ((error as { code?: string }).code === 'auth/popup-closed-by-user') {
+            if ((error as { code?: string }).code === 'auth/cancelled-popup-request') {
                 toast.error('Sign-in cancelled. Please try again.');
             } else if ((error as { code?: string }).code === 'auth/popup-blocked') {
                 toast.error('Pop-up blocked by browser. Please allow pop-ups for this site.');
             } else {
                 toast.error(`Google sign-in failed: ${(error as Error)?.message || 'Unknown error'}`);
             }
-        } finally {
+            
             setIsGoogleLoading(false);
         }
     };
